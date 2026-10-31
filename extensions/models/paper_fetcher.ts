@@ -223,12 +223,19 @@ export const model = {
   type: "@vcjdeboer/paper-fetcher",
   // A string literal, not TOOL_VERSION: the registry reads it from the source
   // text. A unit test keeps the two equal.
-  version: "2026.10.31.2",
+  version: "2026.10.31.3",
   globalArguments: GlobalArgsSchema,
   upgrades: [
     {
       toVersion: "2026.10.31.2",
       description: "No settings changed (registry metadata fix)",
+      upgradeAttributes: (
+        old: Record<string, unknown>,
+      ): Record<string, unknown> => old,
+    },
+    {
+      toVersion: "2026.10.31.3",
+      description: "No settings changed (README: API key vault handling)",
       upgradeAttributes: (
         old: Record<string, unknown>,
       ): Record<string, unknown> => old,

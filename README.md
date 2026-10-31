@@ -29,19 +29,43 @@ swamp model create @vcjdeboer/paper-fetcher papers --global-arg papersDir=~/Pape
 | Global argument  | Default    | Used by                                     |
 | ---------------- | ---------- | ------------------------------------------- |
 | `papersDir`      | `~/Papers` | `fetch`                                     |
-| `openalexApiKey` | none       | every OpenAlex request (optional)           |
+| `openalexApiKey` | none       | every OpenAlex request (optional, vault only) |
 
-OpenAlex works without a key. If you have one, keep it in a vault rather than
-in the model definition:
+### OpenAlex API key: always in a vault
+
+OpenAlex works without a key; a free key gives you a higher rate limit. The
+extension marks `openalexApiKey` as **sensitive**, so swamp only accepts it as a
+reference to a vault: a key typed in as plain text is refused and nothing is
+written. Store it once and reference it:
 
 ```sh
 swamp vault create local_encryption secrets
-swamp vault put secrets OPENALEX_API_KEY
+swamp vault put secrets OPENALEX_API_KEY          # prompts for the key; it is not echoed
 swamp model create @vcjdeboer/paper-fetcher papers \
   --global-arg 'openalexApiKey=${{ vault.get(secrets, OPENALEX_API_KEY) }}'
 ```
 
-No other credentials are used: the extension never logs in anywhere.
+What happens with the key:
+
+- **Plain text is refused.** `--global-arg openalexApiKey=<key>` fails with
+  "marked sensitive and cannot be set to a literal value"; nothing is saved.
+- **Only the reference is stored.** The model definition holds
+  `${{ vault.get(secrets, OPENALEX_API_KEY) }}`; swamp reads the key from the
+  vault at run time and redacts it in stored output. A `local_encryption`
+  vault keeps the encrypted key under `.swamp/`, which `swamp init` puts in
+  `.gitignore`, so it is never committed.
+- **Hand-edited definitions are caught.** If someone pastes a key straight into
+  the model's YAML file, swamp does not block the run, but
+  `swamp doctor secrets` reports it. Run it to check a repository:
+
+```sh
+swamp doctor secrets
+```
+
+The key is sent only to OpenAlex (as the `api_key` query parameter) and is
+never logged. The extension package itself contains no keys: each user stores
+their own. No other credentials are used — the extension never logs in
+anywhere.
 
 ## Usage
 
@@ -153,7 +177,7 @@ is only read, never moved, renamed or changed.
   "sha256": "…",
   "bytes": 1218474,
   "retrieved_at": "2026-10-31T12:06:12Z",
-  "tool": "swamp @vcjdeboer/paper-fetcher 2026.10.31.2",
+  "tool": "swamp @vcjdeboer/paper-fetcher 2026.10.31.3",
   "attempts": [{ "route": "open_access:openalex:best_oa_location", "url": "…", "result": "ok" }]
 }
 ```

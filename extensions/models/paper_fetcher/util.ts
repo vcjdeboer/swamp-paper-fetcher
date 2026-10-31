@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 /** Version string written into every provenance record. */
-export const TOOL_VERSION = "2026.10.31.2";
+export const TOOL_VERSION = "2026.10.31.3";
 
 /** Tool identifier written into provenance records. */
 export const TOOL_NAME = `swamp @vcjdeboer/paper-fetcher ${TOOL_VERSION}`;
