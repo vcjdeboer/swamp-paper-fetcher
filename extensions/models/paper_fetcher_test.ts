@@ -1,5 +1,5 @@
 // Tests for @vcjdeboer/paper-fetcher. The network is replaced by a fake fetch;
-// Zotero is a small fake database; PDFs are generated on the fly.
+// PDFs are generated on the fly.
 
 import {
   assert,
@@ -10,10 +10,9 @@ import {
 } from "jsr:@std/assert@1.0.19";
 import { createModelTestContext } from "jsr:@swamp-club/swamp-testing@0.20261027.64";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { model } from "./paper_fetcher.ts";
 import { fetchPdf } from "./paper_fetcher/fetch.ts";
-import { importDownloads } from "./paper_fetcher/import_downloads.ts";
+import { identifyPdf } from "./paper_fetcher/identify.ts";
 import { pdfToText } from "./paper_fetcher/pdftext.ts";
 import { resolveDoi } from "./paper_fetcher/resolve.ts";
 import {
@@ -23,7 +22,6 @@ import {
   HttpClient,
   normalizeDoi,
 } from "./paper_fetcher/util.ts";
-import { zoteroLookup } from "./paper_fetcher/zotero.ts";
 import {
   bytes,
   FAKE_PDF,
@@ -31,7 +29,6 @@ import {
   html,
   json,
   makePdf,
-  makeZotero,
 } from "./paper_fetcher/fixtures_test.ts";
 
 const DOI = "10.1038/s41586-025-09694-5";
@@ -250,26 +247,6 @@ Deno.test("redirects are followed and cookies are sent back", async () => {
   assertEquals([r.status, r.url], [200, "https://www.a.org/next"]);
 });
 
-// ------------------------------------------------------------------ zotero
-
-Deno.test("zoteroLookup by DOI, title words and collection, on a copy", async () => {
-  const z = await tmp();
-  makeZotero(z);
-  const before = await Deno.readFile(join(z, "zotero.sqlite"));
-  const r = await zoteroLookup(z, { doi: "https://doi.org/10.1016/J.STEMCR.2017.09.007" });
-  assertEquals(r.count, 1);
-  assertEquals(r.items[0].has_pdf, true);
-  assertEquals(r.items[0].creators, ["Li Tan"]);
-  assert(r.items[0].attachments[0].path!.endsWith(join("storage", "BBBB2222", "Tan 2017.pdf")));
-  assertEquals((await zoteroLookup(z, { query: "mole rat epigenome" })).count, 1);
-  assertEquals((await zoteroLookup(z, { collection: "LECTURE2" })).count, 1);
-  // whole-word start: 'aging' must not match 'imaging'; items in the bin are left out
-  assertEquals((await zoteroLookup(z, { query: "aging" })).count, 0);
-  assertEquals(await Deno.readFile(join(z, "zotero.sqlite")), before);
-  await assertRejects(() => zoteroLookup(z, {}));
-  await assertRejects(() => zoteroLookup(join(z, "missing"), { query: "x" }));
-});
-
 // ------------------------------------------------------------------ pdf text
 
 Deno.test("pdfToText works with both engines, chunks, and saves .txt", async () => {
@@ -304,102 +281,12 @@ Deno.test("pdfToText rejects files that are not PDFs", async () => {
   await assertRejects(() => pdfToText(join(dir, "x.txt")), Error, "Not a .pdf");
 });
 
-// ------------------------------------------------------------------ import downloads
-
-Deno.test("importDownloads files PDFs by DOI, checks titles, skips duplicates", async () => {
-  const dl = await tmp();
-  const papers = await tmp();
-  const own = makePdf([OPENALEX.title, `https://doi.org/${DOI}`]);
-  await Deno.writeFile(join(dl, "paper (1).pdf"), own);
-  await Deno.writeFile(join(dl, "paper (2).pdf"), own); // same bytes
-  await Deno.writeFile(join(dl, "other.pdf"), makePdf(["Totally unrelated title text", "doi:10.5555/zzz.1"]));
-  await Deno.writeFile(join(dl, "nodoi.pdf"), makePdf(["no identifier in here"]));
-  await Deno.writeTextFile(join(dl, "fake.pdf"), "<html>login</html>");
-  const f = fakeFetch({
-    [OA_URL]: json(OPENALEX),
-    "https://api.openalex.org/works/doi:10.5555/zzz.1": json({ ...OPENALEX, title: "Bowhead whale DNA repair evidence" }),
-  });
-
-  const dry = await importDownloads(dl, papers, client(f), { dryRun: true, engine: "unpdf" });
-  assertEquals(dry.summary.would_import, 1);
-  assertEquals(await listDir(papers), []);
-
-  const res = await importDownloads(dl, papers, client(f), { engine: "unpdf" });
-  const byFile = Object.fromEntries(res.files.map((r) => [r.file, r.status]));
-  assertEquals(res.scanned, 5);
-  assertEquals(byFile["fake.pdf"], "skipped");
-  assertEquals(byFile["nodoi.pdf"], "no_doi");
-  assertEquals(byFile["other.pdf"], "doi_mismatch");
-  assertEquals(
-    [byFile["paper (1).pdf"], byFile["paper (2).pdf"]].sort(),
-    ["duplicate", "imported"],
-  );
-  const stem = doiToFilename(DOI);
-  assertEquals(await listDir(papers), [`${stem}.json`, `${stem}.pdf`]);
-  const prov = JSON.parse(await Deno.readTextFile(join(papers, `${stem}.json`)));
-  assertEquals([prov.route, prov.doi_source, prov.doi_found_in_text], ["import_downloads", "pdf_text", true]);
-
-  const again = await importDownloads(dl, papers, client(f), { engine: "unpdf" });
-  assertEquals(again.summary.already_present, 1);
-});
-
-Deno.test("importDownloads finds a DOI by embedded title when the text has none", async () => {
-  const dl = await tmp();
-  const papers = await tmp();
-  await Deno.writeFile(join(dl, "t.pdf"), makePdf([OPENALEX.title, "body text"], OPENALEX.title));
-  const search = "https://api.openalex.org/works?" +
-    new URLSearchParams({ search: OPENALEX.title, "per-page": "3" });
-  const f = fakeFetch({
-    [search]: json({ results: [{ title: OPENALEX.title, doi: `https://doi.org/${DOI}` }] }),
-    [OA_URL]: json(OPENALEX),
-  });
-  const res = await importDownloads(dl, papers, client(f), { engine: "unpdf" });
-  assertEquals(res.files[0].status, "imported");
-  assertEquals(res.files[0].doi_source, "title_search");
-});
-
-Deno.test("importDownloads does not file a PDF it could not verify", async () => {
-  const dl = await tmp();
-  const papers = await tmp();
-  await Deno.writeFile(join(dl, "p.pdf"), makePdf([OPENALEX.title, `doi:${DOI}`]));
-  const down = fakeFetch({ [OA_URL]: new TypeError("offline"), [CR_URL]: new TypeError("offline") });
-  const res = await importDownloads(dl, papers, client(down), { engine: "unpdf" });
-  assertEquals(res.files[0].status, "unverified");
-  assertMatch(res.files[0].reason!, /offline/);
-  assertEquals(await listDir(papers), []);
-});
-
-Deno.test("importDownloads dry run predicts the real run (same DOI, different files)", async () => {
-  const dl = await tmp();
-  const papers = await tmp();
-  await Deno.writeFile(join(dl, "a.pdf"), makePdf([OPENALEX.title, `doi:${DOI}`, "version A"]));
-  await Deno.writeFile(join(dl, "b.pdf"), makePdf([OPENALEX.title, `doi:${DOI}`, "version B"]));
-  const f = fakeFetch({ [OA_URL]: json(OPENALEX) });
-  const dry = await importDownloads(dl, papers, client(f), { dryRun: true, engine: "unpdf" });
-  const real = await importDownloads(dl, papers, client(f), { engine: "unpdf" });
-  assertEquals(dry.summary, { would_import: 1, conflict: 1 });
-  assertEquals(real.summary, { imported: 1, conflict: 1 });
-  await assertRejects(() => importDownloads(join(dl, "nope"), papers, client(f)), Error, "does not exist");
-});
-
-Deno.test("zoteroLookup reports truncation and matches DOIs stored as URLs", async () => {
-  const z = await tmp();
-  makeZotero(z);
-  // "i" starts a word in both live titles ("iPSC", "imaging")
-  const r = await zoteroLookup(z, { query: "i", limit: 1 });
-  assertEquals([r.count, r.returned, r.truncated], [2, 1, true]);
-  const db = new DatabaseSync(join(z, "zotero.sqlite"));
-  db.exec("update itemDataValues set value = 'https://doi.org/10.1016/j.stemcr.2017.09.007' where valueID = 2");
-  db.close();
-  assertEquals((await zoteroLookup(z, { doi: "10.1016/j.stemcr.2017.09.007" })).count, 1);
-});
-
 // ------------------------------------------------------------------ model methods
 
 Deno.test("model.fetch writes a download resource named after the DOI", async () => {
   const dir = await tmp();
   const { context, getWrittenResources } = createModelTestContext({
-    globalArgs: { papersDir: dir, downloadsDir: dir, zoteroDir: dir },
+    globalArgs: { papersDir: dir },
   });
   const f = fakeFetch({ [OA_URL]: json(OPENALEX), [`${LANDING}.pdf`]: bytes(FAKE_PDF) });
   // deno-lint-ignore no-explicit-any
@@ -427,39 +314,81 @@ Deno.test("model.resolve writes a work resource and fails loudly when nothing re
   );
 });
 
-Deno.test("model.zoteroLookup and model.pdfToText write schema-valid resources", async () => {
-  const z = await tmp();
-  makeZotero(z);
-  await Deno.writeFile(join(z, "a.pdf"), makePdf(["hello text"]));
-  const { context, getWrittenResources } = createModelTestContext({
-    globalArgs: { papersDir: z, downloadsDir: z, zoteroDir: z },
-  });
+Deno.test("model.pdfToText writes a schema-valid pdfText named after the file", async () => {
+  const dir = await tmp();
+  await Deno.writeFile(join(dir, "a.pdf"), makePdf(["hello text"]));
+  const { context, getWrittenResources } = createModelTestContext({ globalArgs: { papersDir: dir } });
   // deno-lint-ignore no-explicit-any
-  await model.methods.zoteroLookup.execute({ query: "mole rat", limit: 20 }, context as any);
-  // deno-lint-ignore no-explicit-any
-  await model.methods.pdfToText.execute({ path: join(z, "a.pdf"), maxChars: 1000, offset: 0, saveTxt: false }, context as any);
-  const [zr, tx] = getWrittenResources();
-  assertEquals([zr.name, zr.data.count], ["zotero-latest", 1]);
-  assert(model.resources.zoteroResult.schema.strict().safeParse(zr.data).success);
+  await model.methods.pdfToText.execute({ path: join(dir, "a.pdf"), maxChars: 1000, offset: 0, saveTxt: false }, context as any);
+  const tx = getWrittenResources()[0];
   assertMatch(tx.name, /^text-a-[0-9a-f]{8}$/);
   assertEquals(tx.data.txt_path, null);
   assert(model.resources.pdfText.schema.strict().safeParse(tx.data).success);
 });
 
-Deno.test("model.importDownloads writes a schema-valid importRun", async () => {
-  const dl = await tmp();
-  const papers = await tmp();
-  await Deno.writeFile(join(dl, "p.pdf"), makePdf([OPENALEX.title, `doi:${DOI}`]));
-  await Deno.writeTextFile(join(dl, "bad.pdf"), "nope");
-  const { context, getWrittenResources } = createModelTestContext({
-    globalArgs: { papersDir: papers, downloadsDir: dl, zoteroDir: dl },
+// ------------------------------------------------------------------ identify
+
+Deno.test("identify finds the paper's own DOI in the text and checks the title", async () => {
+  const dir = await tmp();
+  const p = join(dir, "download (3).pdf");
+  const pdf = makePdf([OPENALEX.title, `https://doi.org/${DOI}`, "References: doi:10.9999/other.1"]);
+  await Deno.writeFile(p, pdf);
+  const r = await identifyPdf(p, client(fakeFetch({ [OA_URL]: json(OPENALEX) })), { engine: "unpdf" });
+  assertEquals([r.status, r.doi, r.doi_source, r.title_match], ["identified", DOI, "pdf_text", 1]);
+  assertEquals([r.doi_found_in_text, r.title, r.year], [true, OPENALEX.title, 2025]);
+  assertEquals(await Deno.readFile(p), pdf); // read-only
+  assertEquals(await listDir(dir), ["download (3).pdf"]);
+});
+
+Deno.test("identify falls back to the embedded title via OpenAlex search", async () => {
+  const dir = await tmp();
+  const p = join(dir, "t.pdf");
+  await Deno.writeFile(p, makePdf([OPENALEX.title, "body text"], OPENALEX.title));
+  const search = "https://api.openalex.org/works?" +
+    new URLSearchParams({ search: OPENALEX.title, "per-page": "3" });
+  const f = fakeFetch({
+    [search]: json({ results: [{ title: OPENALEX.title, doi: `https://doi.org/${DOI}` }] }),
+    [OA_URL]: json(OPENALEX),
   });
+  const r = await identifyPdf(p, client(f), { engine: "unpdf" });
+  assertEquals([r.status, r.doi, r.doi_source], ["identified", DOI, "title_search"]);
+});
+
+Deno.test("identify reports mismatch, unverified and no_doi honestly", async () => {
+  const dir = await tmp();
+  const other = join(dir, "other.pdf");
+  await Deno.writeFile(other, makePdf(["Totally unrelated title text", `doi:${DOI}`]));
+  const r1 = await identifyPdf(other, client(fakeFetch({ [OA_URL]: json(OPENALEX) })), { engine: "unpdf" });
+  assertEquals(r1.status, "doi_mismatch");
+
+  const own = join(dir, "own.pdf");
+  await Deno.writeFile(own, makePdf([OPENALEX.title, `doi:${DOI}`]));
+  const offline = fakeFetch({ [OA_URL]: new TypeError("offline"), [CR_URL]: new TypeError("offline") });
+  const r2 = await identifyPdf(own, client(offline), { engine: "unpdf" });
+  assertEquals([r2.status, r2.doi, r2.title], ["unverified", DOI, null]);
+  assertMatch(r2.message, /offline/);
+
+  const none = join(dir, "none.pdf");
+  await Deno.writeFile(none, makePdf(["no identifier in here"]));
+  const r3 = await identifyPdf(none, client(fakeFetch({})), { engine: "unpdf" });
+  assertEquals([r3.status, r3.doi], ["no_doi", null]);
+
+  await Deno.writeTextFile(join(dir, "fake.pdf"), "<html>login</html>");
+  await assertRejects(() => identifyPdf(join(dir, "fake.pdf"), client(fakeFetch({}))), Error, "%PDF-");
+});
+
+Deno.test("model.identify writes a schema-valid identification", async () => {
+  const dir = await tmp();
+  await Deno.writeFile(join(dir, "p.pdf"), makePdf([OPENALEX.title, `doi:${DOI}`]));
+  const { context, getWrittenResources } = createModelTestContext({ globalArgs: { papersDir: dir } });
   const f = fakeFetch({ [OA_URL]: json(OPENALEX) });
   // deno-lint-ignore no-explicit-any
-  await model.methods.importDownloads.execute({ sinceHours: 1, dryRun: false, _fetch: f }, context as any);
+  await model.methods.identify.execute({ path: join(dir, "p.pdf"), _fetch: f }, context as any);
   const w = getWrittenResources()[0];
-  assertEquals([w.specName, w.name], ["importRun", "import-latest"]);
-  const parsed = model.resources.importRun.schema.safeParse(w.data);
+  assertEquals(w.specName, "identification");
+  assertMatch(w.name, /^identify-p-[0-9a-f]{8}$/);
+  const parsed = model.resources.identification.schema.strict().safeParse(w.data);
   assert(parsed.success, JSON.stringify(parsed.error?.issues));
-  assertEquals(w.data.summary, { imported: 1, skipped: 1 });
+  assertEquals(w.data.status, "identified");
 });
+

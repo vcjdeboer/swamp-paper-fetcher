@@ -1,8 +1,6 @@
 // Test fixtures shared by the paper-fetcher tests (the _test.ts suffix keeps
 // swamp from loading this file as a model).
 
-import { DatabaseSync } from "node:sqlite";
-import { join } from "node:path";
 import type { FetchFn } from "./util.ts";
 
 /** Smallest byte string that passes the %PDF- check. */
@@ -89,40 +87,4 @@ export function html(body: string, status = 200): Response {
     status,
     headers: { "content-type": "text/html" },
   });
-}
-
-/** Write a small Zotero database (same schema subset Zotero uses) into `dir`. */
-export function makeZotero(dir: string): void {
-  const db = new DatabaseSync(join(dir, "zotero.sqlite"));
-  db.exec(`
-    create table itemTypes(itemTypeID integer primary key, typeName text);
-    create table items(itemID integer primary key, itemTypeID int, key text, dateAdded text);
-    create table fields(fieldID integer primary key, fieldName text);
-    create table itemDataValues(valueID integer primary key, value text);
-    create table itemData(itemID int, fieldID int, valueID int);
-    create table itemAttachments(itemID int, parentItemID int, contentType text, path text);
-    create table collections(collectionID integer primary key, collectionName text);
-    create table collectionItems(collectionID int, itemID int);
-    create table creators(creatorID integer primary key, firstName text, lastName text);
-    create table itemCreators(itemID int, creatorID int, orderIndex int);
-    create table deletedItems(itemID int);
-    insert into itemTypes values (1,'journalArticle'),(2,'attachment');
-    insert into items values (1,1,'AAAA1111','2021'),(2,2,'BBBB2222','2021'),(3,1,'CCCC3333','2022'),(4,1,'DDDD4444','2023');
-    insert into fields values (1,'title'),(2,'DOI'),(3,'date'),(4,'publicationTitle');
-    insert into itemDataValues values
-      (1,'Naked Mole Rat Cells Have a Stable Epigenome that Resists iPSC Reprogramming'),
-      (2,'10.1016/j.stemcr.2017.09.007'),
-      (3,'Quantitative imaging of mitochondria'),
-      (4,'Deleted aging paper');
-    insert into itemData values (1,1,1),(1,2,2),(3,1,3),(4,1,4);
-    insert into itemAttachments values (2,1,'application/pdf','storage:Tan 2017.pdf');
-    insert into collections values (1,'lecture2');
-    insert into collectionItems values (1,1);
-    insert into creators values (1,'Li','Tan');
-    insert into itemCreators values (1,1,0);
-    insert into deletedItems values (4);
-  `);
-  db.close();
-  Deno.mkdirSync(join(dir, "storage", "BBBB2222"), { recursive: true });
-  Deno.writeFileSync(join(dir, "storage", "BBBB2222", "Tan 2017.pdf"), FAKE_PDF);
 }

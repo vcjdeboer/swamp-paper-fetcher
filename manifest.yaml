@@ -1,7 +1,7 @@
 manifestVersion: 1
 name: "@vcjdeboer/paper-fetcher"
 version: "2026.10.31.1"
-description: "Resolve DOIs (OpenAlex, Crossref), download paper PDFs from open-access sources or publisher pages with a provenance record, file browser downloads by DOI, search a local Zotero library read-only, and extract text from PDFs."
+description: "Resolve DOIs (OpenAlex, Crossref), download paper PDFs from open-access sources or publisher pages with a provenance record, identify which paper a local PDF is, and extract text from PDFs."
 repository: "https://github.com/vcjdeboer/swamp-paper-fetcher"
 models:
   - paper_fetcher.ts
@@ -12,6 +12,5 @@ labels:
   - research
   - doi
   - pdf
-  - zotero
   - open-access
   - literature

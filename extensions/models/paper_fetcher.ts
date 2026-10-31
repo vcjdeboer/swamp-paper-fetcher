@@ -1,11 +1,11 @@
 /**
  * Paper fetcher: work with scholarly papers by DOI from swamp.
  *
- * Methods: `resolve` (metadata and open-access status from OpenAlex and
- * Crossref), `fetch` (download the PDF with a provenance record),
- * `importDownloads` (file PDFs saved by hand from a browser), `zoteroLookup`
- * (read-only search of a local Zotero library) and `pdfToText` (text from a
- * local PDF). Every method records its result as versioned swamp data.
+ * Methods: `resolve` (DOI -> metadata and open-access status from OpenAlex
+ * and Crossref), `identify` (local PDF -> DOI, checked against the registered
+ * title), `fetch` (DOI -> PDF on disk with a provenance record) and
+ * `pdfToText` (local PDF -> text). Every method records its result as
+ * versioned swamp data.
  *
  * @module
  */
@@ -15,34 +15,23 @@
 
 import { z } from "npm:zod@4";
 import { fetchPdf } from "./paper_fetcher/fetch.ts";
-import {
-  IMPORT_STATUSES,
-  importDownloads,
-} from "./paper_fetcher/import_downloads.ts";
+import { IDENTIFY_STATUSES, identifyPdf } from "./paper_fetcher/identify.ts";
 import { pdfToText } from "./paper_fetcher/pdftext.ts";
 import { resolveDoi } from "./paper_fetcher/resolve.ts";
 import {
   doiToFilename,
   type FetchFn,
   HttpClient,
-  normalizeDoi,
   sha256Hex,
   TOOL_VERSION,
 } from "./paper_fetcher/util.ts";
-import { zoteroLookup } from "./paper_fetcher/zotero.ts";
 
 // --------------------------------------------------------------------------- arguments
 
 /** Settings shared by all methods of one paper-fetcher model instance. */
 const GlobalArgsSchema = z.object({
   papersDir: z.string().default("~/Papers").describe(
-    "Folder where PDFs and their <doi>.json provenance records are saved",
-  ),
-  downloadsDir: z.string().default("~/Downloads").describe(
-    "Browser downloads folder that importDownloads reads from",
-  ),
-  zoteroDir: z.string().default("~/Zotero").describe(
-    "Zotero data folder (the one that contains zotero.sqlite)",
+    "Folder where fetch saves PDFs and their <doi>.json provenance records",
   ),
   openalexApiKey: z.string().optional().meta({ sensitive: true }).describe(
     "Optional OpenAlex API key; store it in a vault and reference it",
@@ -52,44 +41,23 @@ const GlobalArgsSchema = z.object({
 /** Parsed global arguments. */
 type GlobalArgs = z.infer<typeof GlobalArgsSchema>;
 
+const DoiArg = z.string().describe(
+  "DOI as 10.x/y, doi:10.x/y or https://doi.org/10.x/y",
+);
+
 /** Arguments of `resolve`. */
-const ResolveArgsSchema = z.object({
-  doi: z.string().describe(
-    "DOI as 10.x/y, doi:10.x/y or https://doi.org/10.x/y",
-  ),
+const ResolveArgsSchema = z.object({ doi: DoiArg });
+
+/** Arguments of `identify`. */
+const IdentifyArgsSchema = z.object({
+  path: z.string().describe("Path to a local .pdf file"),
 });
 
 /** Arguments of `fetch`. */
 const FetchArgsSchema = z.object({
-  doi: z.string().describe(
-    "DOI as 10.x/y, doi:10.x/y or https://doi.org/10.x/y",
-  ),
+  doi: DoiArg,
   overwrite: z.boolean().default(false).describe(
     "Download again even if a valid PDF is already in papersDir",
-  ),
-});
-
-/** Arguments of `importDownloads`. */
-const ImportArgsSchema = z.object({
-  sinceHours: z.number().positive().default(48).describe(
-    "Only consider PDFs changed in this many hours",
-  ),
-  dryRun: z.boolean().default(false).describe(
-    "Report what would be imported without copying anything",
-  ),
-});
-
-/** Arguments of `zoteroLookup`; give at least one of doi, query, collection. */
-const ZoteroArgsSchema = z.object({
-  doi: z.string().optional().describe("Exact DOI match"),
-  query: z.string().optional().describe(
-    "Words that must all start a word in the title",
-  ),
-  collection: z.string().optional().describe(
-    "Only items in this collection (case-insensitive)",
-  ),
-  limit: z.number().int().positive().default(20).describe(
-    "Maximum number of items returned",
   ),
 });
 
@@ -133,6 +101,26 @@ const WorkSchema = z.object({
   errors: z.array(z.string()),
 });
 
+/** Which paper a local PDF is (`identify`). */
+const IdentificationSchema = z.object({
+  status: z.enum(IDENTIFY_STATUSES),
+  path: z.string(),
+  sha256: z.string(),
+  bytes: z.number(),
+  doi: z.string().nullable(),
+  doi_source: z.enum(["pdf_text", "title_search"]).nullable(),
+  doi_found_in_text: z.boolean(),
+  pdf_title: z.string().nullable(),
+  title: z.string().nullable(),
+  year: z.number().nullable(),
+  journal: z.string().nullable(),
+  authors: z.array(z.string()),
+  authors_total: z.number(),
+  title_match: z.number().nullable(),
+  resolve_errors: z.array(z.string()),
+  message: z.string(),
+});
+
 /** Outcome and provenance of one `fetch`. */
 const DownloadSchema = z.object({
   status: z.enum(["downloaded", "already_present", "not_fetched", "conflict"]),
@@ -157,59 +145,6 @@ const DownloadSchema = z.object({
   attempts: z.array(AttemptSchema),
   resolve_errors: z.array(z.string()),
   message: z.string().nullable(),
-});
-
-/** Result of one `importDownloads` run. */
-const ImportRunSchema = z.object({
-  downloads_dir: z.string(),
-  papers_dir: z.string(),
-  dry_run: z.boolean(),
-  scanned: z.number(),
-  summary: z.record(z.string(), z.number()),
-  files: z.array(
-    z.object({
-      file: z.string(),
-      status: z.enum(IMPORT_STATUSES),
-      doi: z.string().nullable(),
-      doi_source: z.enum(["pdf_text", "title_search"]).nullable(),
-      title: z.string().nullable(),
-      title_match: z.number().nullable(),
-      path: z.string().nullable(),
-      same_as: z.string().nullable(),
-      reason: z.string().nullable(),
-    }),
-  ),
-});
-
-/** Result of one `zoteroLookup`. */
-const ZoteroResultSchema = z.object({
-  query: z.object({
-    doi: z.string().optional(),
-    query: z.string().optional(),
-    collection: z.string().optional(),
-  }),
-  count: z.number(),
-  returned: z.number(),
-  truncated: z.boolean(),
-  items: z.array(
-    z.object({
-      item_key: z.string(),
-      type: z.string(),
-      title: z.string().nullable(),
-      doi: z.string().nullable(),
-      date: z.string().nullable(),
-      publication: z.string().nullable(),
-      creators: z.array(z.string()),
-      collections: z.array(z.string()),
-      attachments: z.array(z.object({
-        key: z.string(),
-        content_type: z.string().nullable(),
-        path: z.string().nullable(),
-        exists: z.boolean(),
-      })),
-      has_pdf: z.boolean(),
-    }),
-  ),
 });
 
 /** One chunk of text from `pdfToText`. */
@@ -265,6 +200,17 @@ function safeName(s: string): string {
   return s.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 120);
 }
 
+/**
+ * Instance name for data about a local file: its name for readability, plus a
+ * short hash of the full path so same-named files in different folders do not
+ * overwrite each other.
+ */
+async function fileInstance(prefix: string, path: string): Promise<string> {
+  const base = (path.split(/[\\/]/).pop() ?? "pdf").replace(/\.pdf$/i, "");
+  const tag = (await sha256Hex(new TextEncoder().encode(path))).slice(0, 8);
+  return `${prefix}-${safeName(base)}-${tag}`;
+}
+
 // --------------------------------------------------------------------------- model
 
 /** The `@vcjdeboer/paper-fetcher` model type. */
@@ -279,23 +225,17 @@ export const model = {
       lifetime: "infinite" as const,
       garbageCollection: 5,
     },
+    identification: {
+      description: "Which paper (DOI) a local PDF is, and how sure that is",
+      schema: IdentificationSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 5,
+    },
     download: {
       description: "Outcome and provenance of a PDF download for a DOI",
       schema: DownloadSchema,
       lifetime: "infinite" as const,
       garbageCollection: 10,
-    },
-    importRun: {
-      description: "What importDownloads did with each file",
-      schema: ImportRunSchema,
-      lifetime: "infinite" as const,
-      garbageCollection: 10,
-    },
-    zoteroResult: {
-      description: "Items found by zoteroLookup",
-      schema: ZoteroResultSchema,
-      lifetime: "infinite" as const,
-      garbageCollection: 5,
     },
     pdfText: {
       description: "A chunk of text extracted from a local PDF",
@@ -334,6 +274,34 @@ export const model = {
         return { dataHandles: [h] };
       },
     },
+    identify: {
+      description:
+        "Work out which paper a local PDF is: the DOI printed on its first pages " +
+        "(or a near-exact OpenAlex match of its embedded title), checked against the " +
+        "title registered for that DOI. Read-only: the file is not moved or changed.",
+      arguments: IdentifyArgsSchema,
+      execute: async (
+        args: z.infer<typeof IdentifyArgsSchema> & TestHooks,
+        ctx: MethodContext,
+      ): Promise<MethodResult> => {
+        ctx.logger.info("Identifying {path}", { path: args.path });
+        const res = await identifyPdf(args.path, client(ctx, args), {
+          openalexApiKey: key(ctx),
+        });
+        const props = { status: res.status, message: res.message };
+        if (res.status === "identified") {
+          ctx.logger.info("{status}: {message}", props);
+        } else {
+          ctx.logger.warning("{status}: {message}", props);
+        }
+        const h = await ctx.writeResource(
+          "identification",
+          await fileInstance("identify", res.path),
+          { ...res },
+        );
+        return { dataHandles: [h] };
+      },
+    },
     fetch: {
       description:
         "Download the PDF for a DOI into papersDir as <doi>.pdf with a <doi>.json " +
@@ -356,10 +324,10 @@ export const model = {
           { openalexApiKey: key(ctx), overwrite: args.overwrite },
         );
         if (out.status === "not_fetched") {
-          ctx.logger.warning(
-            "No PDF for {doi}; open {url} in a browser, then run importDownloads",
-            { doi: out.doi, url: out.landing_url },
-          );
+          ctx.logger.warning("No PDF for {doi}; open {url} in a browser", {
+            doi: out.doi,
+            url: out.landing_url,
+          });
         } else if (out.status === "conflict") {
           ctx.logger.warning("{message}", { message: out.message });
         } else {
@@ -377,86 +345,11 @@ export const model = {
         return { dataHandles: [h] };
       },
     },
-    importDownloads: {
-      description:
-        "File recent PDFs from downloadsDir into papersDir as <doi>.pdf, using the DOI " +
-        "printed in the PDF (or a near-exact title match in OpenAlex), checked against " +
-        "the registered title. Originals are left in place.",
-      arguments: ImportArgsSchema,
-      execute: async (
-        args: z.infer<typeof ImportArgsSchema> & TestHooks,
-        ctx: MethodContext,
-      ): Promise<MethodResult> => {
-        ctx.logger.info(
-          "Importing PDFs from the last {hours} h of {dir} (dry run: {dryRun})",
-          {
-            hours: args.sinceHours,
-            dir: ctx.globalArgs.downloadsDir,
-            dryRun: args.dryRun,
-          },
-        );
-        const res = await importDownloads(
-          ctx.globalArgs.downloadsDir,
-          ctx.globalArgs.papersDir,
-          client(ctx, args),
-          {
-            sinceHours: args.sinceHours,
-            dryRun: args.dryRun,
-            openalexApiKey: key(ctx),
-          },
-        );
-        ctx.logger.info("Scanned {n} PDFs: {summary}", {
-          n: res.scanned,
-          summary: JSON.stringify(res.summary),
-        });
-        const h = await ctx.writeResource("importRun", "import-latest", {
-          downloads_dir: ctx.globalArgs.downloadsDir,
-          papers_dir: ctx.globalArgs.papersDir,
-          dry_run: args.dryRun,
-          ...res,
-        });
-        return { dataHandles: [h] };
-      },
-    },
-    zoteroLookup: {
-      description:
-        "Search the local Zotero library read-only (on a temporary copy of zotero.sqlite) " +
-        "by DOI, title words and/or collection. Returns items with authors, collections, " +
-        "attachment paths and whether the PDF file exists.",
-      arguments: ZoteroArgsSchema,
-      execute: async (
-        args: z.infer<typeof ZoteroArgsSchema>,
-        ctx: MethodContext,
-      ): Promise<MethodResult> => {
-        const q = {
-          doi: args.doi || undefined,
-          query: args.query || undefined,
-          collection: args.collection || undefined,
-        };
-        if (q.doi) q.doi = normalizeDoi(q.doi);
-        ctx.logger.info("Searching Zotero in {dir}", {
-          dir: ctx.globalArgs.zoteroDir,
-        });
-        const res = await zoteroLookup(ctx.globalArgs.zoteroDir, {
-          ...q,
-          limit: args.limit,
-        });
-        ctx.logger.info("Zotero: {count} matching items, {returned} returned", {
-          count: res.count,
-          returned: res.returned,
-        });
-        const h = await ctx.writeResource("zoteroResult", "zotero-latest", {
-          query: q,
-          ...res,
-        });
-        return { dataHandles: [h] };
-      },
-    },
     pdfToText: {
       description:
         "Extract plain text from a local PDF (pdftotext if installed, otherwise the " +
-        "built-in pdf.js reader). Saves the full text as a .txt next to the PDF and " +
-        "returns one chunk; use offset/next_offset for long papers.",
+        "built-in pdf.js reader). Optionally saves the full text as a .txt next to " +
+        "the PDF and returns one chunk; use offset/next_offset for long papers.",
       arguments: PdfTextArgsSchema,
       execute: async (
         args: z.infer<typeof PdfTextArgsSchema>,
@@ -482,17 +375,9 @@ export const model = {
             error: res.txt_error,
           });
         }
-        // file name for readability, plus a short hash of the full path so that
-        // same-named PDFs in different folders do not overwrite each other
-        const base = (res.path.split(/[\\/]/).pop() ?? "pdf").replace(
-          /\.pdf$/i,
-          "",
-        );
-        const tag = (await sha256Hex(new TextEncoder().encode(res.path)))
-          .slice(0, 8);
         const h = await ctx.writeResource(
           "pdfText",
-          `text-${safeName(base)}-${tag}`,
+          await fileInstance("text", res.path),
           { ...res },
         );
         return { dataHandles: [h] };

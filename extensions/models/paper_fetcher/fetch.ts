@@ -294,7 +294,7 @@ export async function fetchPdf(
     attempts,
     message:
       "No PDF could be fetched automatically. Open landing_url in a browser " +
-      "(use the publisher's institutional login if you have one), save the PDF, " +
-      "then run importDownloads.",
+      "(use the publisher's institutional login if you have one) and save the " +
+      "PDF yourself; identify can confirm which paper a saved PDF is.",
   };
 }
