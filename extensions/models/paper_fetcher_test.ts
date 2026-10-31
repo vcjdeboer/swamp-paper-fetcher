@@ -21,6 +21,7 @@ import {
   guessDoi,
   HttpClient,
   normalizeDoi,
+  TOOL_VERSION,
 } from "./paper_fetcher/util.ts";
 import {
   bytes,
@@ -390,5 +391,33 @@ Deno.test("model.identify writes a schema-valid identification", async () => {
   const parsed = model.resources.identification.schema.strict().safeParse(w.data);
   assert(parsed.success, JSON.stringify(parsed.error?.issues));
   assertEquals(w.data.status, "identified");
+});
+
+// ------------------------------------------------------------------ registry metadata
+
+Deno.test("source keeps the shape the swamp registry reads from text", async () => {
+  // The registry extracts model metadata with text patterns; it does not run
+  // the code. These checks mirror those patterns so the model cannot silently
+  // disappear from the extension page again.
+  const src = await Deno.readTextFile(new URL("./paper_fetcher.ts", import.meta.url));
+  const body = src.slice(src.indexOf("export const model = {"));
+  assertEquals(body.match(/type:\s*["']([^"']+)["']/)?.[1], "@vcjdeboer/paper-fetcher");
+  const version = body.match(/version:\s*["']([^"']+)["']/)?.[1];
+  assertEquals(version, model.version);
+  assertEquals(version, TOOL_VERSION); // provenance records name the same version
+  assertEquals(model.upgrades.at(-1)?.toVersion, version);
+
+  const fieldsOf = (schemaName: string): string[] => {
+    const start = src.match(new RegExp(`const\\s+${schemaName}\\s*=\\s*z\\.object\\(\\s*\\{`));
+    assert(start, `${schemaName} must be declared as const ${schemaName} = z.object({...})`);
+    const block = src.slice(start.index! + start[0].length, src.indexOf("\n});", start.index!));
+    return [...block.matchAll(/^ {2}(\w+)\s*:\s*z\.\w+/gm)].map((m) => m[1]);
+  };
+  assertEquals(fieldsOf("GlobalArgsSchema"), ["papersDir", "openalexApiKey"]);
+  for (const [method, def] of Object.entries(model.methods)) {
+    const ref = body.match(new RegExp(`\\n {4}${method}: \\{[\\s\\S]*?arguments:\\s*(\\w+)`))?.[1];
+    assert(ref, `${method}: arguments must reference a named schema`);
+    assertEquals(fieldsOf(ref).sort(), Object.keys(def.arguments.shape).sort(), method);
+  }
 });
 

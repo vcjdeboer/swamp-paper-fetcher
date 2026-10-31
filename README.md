@@ -153,7 +153,7 @@ is only read, never moved, renamed or changed.
   "sha256": "…",
   "bytes": 1218474,
   "retrieved_at": "2026-10-31T12:06:12Z",
-  "tool": "swamp @vcjdeboer/paper-fetcher 2026.10.31.1",
+  "tool": "swamp @vcjdeboer/paper-fetcher 2026.10.31.2",
   "attempts": [{ "route": "open_access:openalex:best_oa_location", "url": "…", "result": "ok" }]
 }
 ```

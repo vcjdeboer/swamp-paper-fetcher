@@ -23,7 +23,6 @@ import {
   type FetchFn,
   HttpClient,
   sha256Hex,
-  TOOL_VERSION,
 } from "./paper_fetcher/util.ts";
 
 // --------------------------------------------------------------------------- arguments
@@ -41,12 +40,16 @@ const GlobalArgsSchema = z.object({
 /** Parsed global arguments. */
 type GlobalArgs = z.infer<typeof GlobalArgsSchema>;
 
-const DoiArg = z.string().describe(
-  "DOI as 10.x/y, doi:10.x/y or https://doi.org/10.x/y",
-);
+// Every field is written out as `name: z.type(...)` and every schema as
+// `const X = z.object({...})`: the swamp registry reads method arguments from
+// the source text, and does not follow shared variables.
 
 /** Arguments of `resolve`. */
-const ResolveArgsSchema = z.object({ doi: DoiArg });
+const ResolveArgsSchema = z.object({
+  doi: z.string().describe(
+    "DOI as 10.x/y, doi:10.x/y or https://doi.org/10.x/y",
+  ),
+});
 
 /** Arguments of `identify`. */
 const IdentifyArgsSchema = z.object({
@@ -55,7 +58,9 @@ const IdentifyArgsSchema = z.object({
 
 /** Arguments of `fetch`. */
 const FetchArgsSchema = z.object({
-  doi: DoiArg,
+  doi: z.string().describe(
+    "DOI as 10.x/y, doi:10.x/y or https://doi.org/10.x/y",
+  ),
   overwrite: z.boolean().default(false).describe(
     "Download again even if a valid PDF is already in papersDir",
   ),
@@ -216,8 +221,19 @@ async function fileInstance(prefix: string, path: string): Promise<string> {
 /** The `@vcjdeboer/paper-fetcher` model type. */
 export const model = {
   type: "@vcjdeboer/paper-fetcher",
-  version: TOOL_VERSION,
+  // A string literal, not TOOL_VERSION: the registry reads it from the source
+  // text. A unit test keeps the two equal.
+  version: "2026.10.31.2",
   globalArguments: GlobalArgsSchema,
+  upgrades: [
+    {
+      toVersion: "2026.10.31.2",
+      description: "No settings changed (registry metadata fix)",
+      upgradeAttributes: (
+        old: Record<string, unknown>,
+      ): Record<string, unknown> => old,
+    },
+  ],
   resources: {
     work: {
       description: "Metadata and open-access status for a DOI",

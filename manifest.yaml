@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@vcjdeboer/paper-fetcher"
-version: "2026.10.31.1"
+version: "2026.10.31.2"
 description: "Resolve DOIs (OpenAlex, Crossref), download paper PDFs from open-access sources or publisher pages with a provenance record, identify which paper a local PDF is, and extract text from PDFs."
 repository: "https://github.com/vcjdeboer/swamp-paper-fetcher"
 models:
