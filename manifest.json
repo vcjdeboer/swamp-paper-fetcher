@@ -1,0 +1,141 @@
+{
+  "manifest_version": "0.4",
+  "name": "paper-fetcher",
+  "display_name": "Paper Fetcher",
+  "version": "0.2.1",
+  "description": "Resolve DOIs, download PDFs (open access, publisher, or via the WUR library proxy in Chrome) with provenance, import browser downloads, search Zotero, extract PDF text.",
+  "long_description": "Seven tools. resolve_doi: metadata and open-access status. fetch_pdf: open access first, then the publisher page, then (optional) the browser route. fetch_pdf_browser: opens a dedicated Chrome profile through the WUR EZproxy; the proxy session is saved and restored, the tool clicks the library 'Log in' button itself, and you only log in by hand when single sign-on asks for it. Slow browser downloads continue in the background (fetch_status). import_downloads: files PDFs from Downloads into the papers folder by DOI. zotero_lookup: read-only search of a copy of zotero.sqlite. pdf_to_text: text from a local PDF. Every download gets a <doi>.json provenance record.",
+  "author": {
+    "name": "Vincent de Boer"
+  },
+  "icon": "icon.png",
+  "server": {
+    "type": "uv",
+    "entry_point": "src/server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${__dirname}",
+        "src/server.py"
+      ],
+      "env": {
+        "PAPER_FETCHER_DOWNLOAD_DIR": "${user_config.download_dir}",
+        "PAPER_FETCHER_ZOTERO_DIR": "${user_config.zotero_dir}",
+        "OPENALEX_API_KEY": "${user_config.openalex_api_key}",
+        "PAPER_FETCHER_DOWNLOADS_DIR": "${user_config.downloads_dir}",
+        "PAPER_FETCHER_BROWSER_FALLBACK": "${user_config.browser_fallback}",
+        "PAPER_FETCHER_CHROME_PROFILE": "${user_config.chrome_profile}",
+        "PAPER_FETCHER_PROXY_LOGIN": "${user_config.proxy_login}",
+        "PAPER_FETCHER_PROXY_HOST": "${user_config.proxy_host}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "resolve_doi",
+      "description": "DOI to metadata, open-access status and candidate PDF URLs"
+    },
+    {
+      "name": "fetch_pdf",
+      "description": "Download a paper's PDF with a provenance record (open access, publisher, browser fallback)"
+    },
+    {
+      "name": "fetch_pdf_browser",
+      "description": "Download a PDF via the WUR library proxy in a dedicated Chrome window"
+    },
+    {
+      "name": "fetch_status",
+      "description": "Status of browser downloads still running in the background"
+    },
+    {
+      "name": "import_downloads",
+      "description": "File PDFs from Downloads into the papers folder by DOI"
+    },
+    {
+      "name": "zotero_lookup",
+      "description": "Search the Zotero library read-only"
+    },
+    {
+      "name": "pdf_to_text",
+      "description": "Extract text from a local PDF"
+    }
+  ],
+  "user_config": {
+    "download_dir": {
+      "type": "directory",
+      "title": "Download folder",
+      "description": "Where PDFs and provenance records are saved",
+      "default": "${HOME}/Papers",
+      "required": true
+    },
+    "zotero_dir": {
+      "type": "directory",
+      "title": "Zotero data folder",
+      "description": "The folder that contains zotero.sqlite (usually ~/Zotero)",
+      "default": "${HOME}/Zotero",
+      "required": true
+    },
+    "openalex_api_key": {
+      "type": "string",
+      "title": "OpenAlex API key (optional)",
+      "description": "Only needed if OpenAlex rate-limits anonymous requests",
+      "sensitive": true,
+      "required": false
+    },
+    "downloads_dir": {
+      "type": "directory",
+      "title": "Browser downloads folder",
+      "description": "Where Chrome saves downloads; import_downloads reads from here",
+      "default": "${HOME}/Downloads",
+      "required": false
+    },
+    "browser_fallback": {
+      "type": "boolean",
+      "title": "Use the browser route as fallback",
+      "description": "When a direct download fails, open Chrome via the WUR library proxy",
+      "default": true,
+      "required": false
+    },
+    "chrome_profile": {
+      "type": "directory",
+      "title": "Chrome profile for paper-fetcher",
+      "description": "Separate Chrome profile that keeps your WUR library login",
+      "default": "${HOME}/.paper-fetcher/chrome-profile",
+      "required": false
+    },
+    "proxy_login": {
+      "type": "string",
+      "title": "Library proxy login prefix",
+      "description": "EZproxy login URL prefix; the article URL is appended",
+      "default": "https://library.wur.nl/WebQuery/rduser/ezproxy-login?url=",
+      "required": false
+    },
+    "proxy_host": {
+      "type": "string",
+      "title": "Proxied host suffix",
+      "description": "Host name ending of proxied publisher pages",
+      "default": ".library.ezproxy.wur.nl",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "linux",
+      "win32"
+    ],
+    "runtimes": {
+      "python": ">=3.10"
+    }
+  },
+  "keywords": [
+    "doi",
+    "pdf",
+    "zotero",
+    "literature",
+    "open access"
+  ],
+  "license": "MIT"
+}
